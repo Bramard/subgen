@@ -1,43 +1,72 @@
-# Stage 1: Builder
-FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04 AS builder
+###
+### Stage 0 - Base: Install base packages needed for builder and runtime
+###
+FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04 AS base
 
 WORKDIR /subgen
 
-ARG DEBIAN_FRONTEND=noninteractive
-
-# Install system dependencies
+# Install required build & runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
-    python3-pip \
     ffmpeg \
-    git \
     tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+# Handle timezone from $TZ docker variable
+RUN ln -sf /usr/share/zoneinfo/$TZ /etc/timezone && \
+    ln -sf /usr/share/zoneinfo/$TZ /etc/localtime
+
+###
+### Stage 1a - Builder: Install packages needed for builder only and build dependencies
+###
+FROM base AS builder
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+# Install only required build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-pip \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
-COPY . .
+###
+### Stage 1b - Builder: Load app source code
+###
+FROM builder AS builder-app
 
-# Stage 2: Runtime
-FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
+# Copy application source code (explicitely, some files may be missing compared to "COPY . ." original code)
+COPY icon.png \
+     language_code.py \
+     launcher.py \
+     subgen.py \
+     subgen.xml \
+     .
 
-WORKDIR /subgen
+###
+### Stage 2a - Runtime: Create a minimal runtime image
+###
+FROM base AS runtime
 
-# Copy necessary files from the builder stage
-COPY --from=builder /subgen/launcher.py .
-COPY --from=builder /subgen/subgen.py .
-COPY --from=builder /subgen/language_code.py .
+# Copy necessary files from builder
 COPY --from=builder /usr/local/lib/python3.10/dist-packages /usr/local/lib/python3.10/dist-packages
 
-# Install runtime dependencies
+# Install only required runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
-    python3 \
     curl \
     && rm -rf /var/lib/apt/lists/*
+
+###
+### Stage 2b - Runtime: Load app source code and run app
+###
+FROM runtime AS runtime-app
+# Copy application source code from builder-app
+COPY --from=builder-app /subgen/launcher.py .
+COPY --from=builder-app /subgen/subgen.py .
+COPY --from=builder-app /subgen/language_code.py .
 
 ENV PYTHONUNBUFFERED=1
 

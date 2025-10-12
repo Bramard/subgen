@@ -32,6 +32,7 @@ services:
        - "CUSTOM_MODEL_PROMPT="
        - "LRC_FOR_AUDIO_FILES=True"
        - "CUSTOM_REGROUP=cm_sl=84_sl=42++++++1"
+       - "TZ=Europe/Brussels"	# The TZ variable is used in the Dockerfile during build operation.
     volumes:
        - "${TV}:/tv"
        - "${MOVIES}:/movies"
