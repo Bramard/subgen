@@ -1587,7 +1587,7 @@ def refresh_jellyfin_metadata(itemid: str, server_ip: str, jellyfin_token: str) 
     """
 
     # Jellyfin API endpoint to refresh metadata for a specific item
-    url = f"{server_ip}/Items/{itemid}/Refresh"
+    url = f"{server_ip}/Items/{itemid}/Refresh?Recursive=true&ImageRefreshMode=Default&MetadataRefreshMode=Default&ReplaceAllImages=false&RegenerateTrickplay=false&ReplaceAllMetadata=false"
 
     # Headers to include the Jellyfin token for authentication
     headers = {
