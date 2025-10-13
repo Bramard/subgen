@@ -50,6 +50,7 @@ FROM runtime AS runtime-app
 COPY launcher.py \
      subgen.py \
      language_code.py \
+     translator_ollama.py \
      .
 # Set command to run the application
 CMD ["python3", "launcher.py"]

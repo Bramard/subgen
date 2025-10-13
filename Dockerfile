@@ -44,6 +44,7 @@ COPY icon.png \
      launcher.py \
      subgen.py \
      subgen.xml \
+     translator_ollama.py \
      .
 
 ###
@@ -67,6 +68,7 @@ FROM runtime AS runtime-app
 COPY --from=builder-app /subgen/launcher.py .
 COPY --from=builder-app /subgen/subgen.py .
 COPY --from=builder-app /subgen/language_code.py .
+COPY --from=builder-app /subgen/translator_ollama.py .
 
 ENV PYTHONUNBUFFERED=1
 

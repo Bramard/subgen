@@ -32,7 +32,18 @@ services:
        - "CUSTOM_MODEL_PROMPT="
        - "LRC_FOR_AUDIO_FILES=True"
        - "CUSTOM_REGROUP=cm_sl=84_sl=42++++++1"
-       - "TZ=Europe/Brussels"	# The TZ variable is used in the Dockerfile during build operation.
+       # The TZ variable is used in the Dockerfile during build operation.
+       - "TZ=Europe/Brussels"	
+       # Subgen behaviour for translator_ollama.py
+       - "SKIP_IF_TARGET_SUBTITLES_EXIST=False"
+       - "SKIP_ONLY_SUBGEN_SUBTITLES=False"
+       - "TRANSCRIBE_OR_TRANSLATE=transcribe"
+       # translator_ollama.py vars
+       - "OLLAMA_TRANSLATE=True"
+       - "OLLAMA_TRANSLATE_API_URL=http://192.168.1.111:11434/api"
+       - "OLLAMA_TRANSLATE_SRC=auto"
+       - "OLLAMA_TRANSLATE_TGT=fr|mk"
+       - "OLLAMA_TRANSLATE_MODEL=hf.co/mradermacher/MKLLM-7B-Instruct-GGUF:F16|zongwei/gemma3-translator:4b"
     volumes:
        - "${TV}:/tv"
        - "${MOVIES}:/movies"
