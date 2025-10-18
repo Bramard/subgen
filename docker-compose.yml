@@ -11,10 +11,10 @@
 # 
 # 4 docker services are used to run 4 instances of subgen :
 # 
-# - 1) subgen-transcribe   : Transcribe to ausio language.	Uses built-in WhisperAI.
+# - 1) subgen-transcribe   : Transcribe to audio language.	Uses built-in WhisperAI.
 # - 2) subgen-translate-en : Translate to English.		Uses built-in WhisperAI.
-# - 3) subgen-translate-mk : Translate to Macedonian		Uses an external Ollama instance.
-# - 4) subgen-translate-fr : Translate to French		Uses an external Ollama instance.
+# - 3) subgen-translate-mk : Translate to Macedonian.		Uses an external Ollama instance.
+# - 4) subgen-translate-fr : Translate to French.		Uses an external Ollama instance.
 # 
 # Each subgen instance is linked to a specific Jellyfin webhook.
 # Each webhook is then restricted to a specific Jellyfin user.
@@ -31,7 +31,7 @@
 # - "I need my native language subtitles for this japanese anime" --> Use subtitle-translate-mk
 # - "English subtitles are enough for this regular british TV show" --> Use subtitle-transcribe
 # - "Let's learn Spanish with an Spanish video training" --> Use subtitle-transcribe
-# - "Let's watch a Italian video together and settle for english subtiles" --> Use subtitle-translate-en
+# - "Let's watch a Italian video together and settle for english subtitles" --> Use subtitle-translate-en
 # 
 # 
 # 
