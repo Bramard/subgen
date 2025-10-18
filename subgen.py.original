@@ -1,5 +1,4 @@
-#subgen_version = '2025.09.1'
-subgen_version = '2025.10.16-translator_ollama'
+subgen_version = '2025.09.1'
 
 """
 ENVIRONMENT VARIABLES DOCUMENTATION
@@ -17,7 +16,6 @@ STANDARDIZED NAMING CONVENTION:
   * SUBTITLE_* for subtitle-related settings
   * WHISPER_* for Whisper model settings
   * TRANSCRIBE_* for transcription settings
-  * OLLAMA_TRANSLATE_* for Ollama translation settings # TRANSLATOR OLLAMA PATCH
 
 BACKWARDS COMPATIBILITY:
 Legacy environment variable names are still supported. If both new and old names are set,
@@ -79,10 +77,6 @@ import torch
 from typing import List
 from enum import Enum
 
-# TRANSLATOR OLLAMA PATCH
-from translator_ollama import gen_translated_subtitles
-        
-
 def convert_to_bool(in_bool):
     # Convert the input to string and lower case, then check against true values
     return str(in_bool).lower() in ('true', 'on', '1', 'y', 'yes')
@@ -112,9 +106,6 @@ def get_env_with_fallback(new_name: str, old_name: str, default_value=None, conv
     
     return value
     
-# TRANSLATOR OLLAMA PATCH
-patch_translate = convert_to_bool(os.getenv('OLLAMA_TRANSLATE', False))
-
 # Server Integration - with backwards compatibility
 plextoken = get_env_with_fallback('PLEX_TOKEN', 'PLEXTOKEN', 'token here')
 plexserver = get_env_with_fallback('PLEX_SERVER', 'PLEXSERVER', 'http://192.168.1.111:32400')
@@ -277,47 +268,21 @@ def transcription_worker():
         try:        
             task = task_queue.get(block=True, timeout=1)
             if "type" in task and task["type"] == "detect_language":
-                # original code #detect_language_task(task['path'])
-                detect_language_task(task['path'], item_id=task['item_id']) # TRANSLATOR OLLAMA PATCH - Send item_id to detect_language_task() so it can put it in the new transcribe_or_translate task after language detection
+                detect_language_task(task['path'])
             elif 'Bazarr-' in task['path']:
                 logging.info(f"Task {task['path']} is being handled by ASR.")
             else:
                 logging.info(f"Task {task['path']} is being handled by Subgen.") 
                 gen_subtitles(task['path'], task['transcribe_or_translate'], task['force_language'])
-                # TRANSLATOR OLLAMA PATCH - Refresh Jellyfin item metadata after Subgen transcription/translation
-                if "item_id" in task:
-                    refresh_jellyfin_metadata(task["item_id"], jellyfinserver, jellyfintoken)
-                    logging.info(f"Metadata for item {task['item_id']} refreshed successfully (post-Subgen {task['transcribe_or_translate']} operation).")
-                # original code #task_queue.task_done() # TRANSLATOR OLLAMA PATCH - Let me use your transcribe_or_translate task a little bit longer, we still have translating work to do :)
-            # original code ## show queue
-            # original code #logging.debug(f"Queue status: {task_queue.qsize()} tasks remaining")
-        except queue.Empty:
-            continue # This is ok, as we have a timeout, nothing needs to be printed
-        except Exception as e:
-            logging.error(f"Error processing task: {e}", exc_info=True) # Log the error and the traceback
-        else:
-            delete_model()  # Call delete_model() *only* if no exception occurred
-
-        # TRANSLATOR OLLAMA PATCH - Do external Ollama translation
-        try:
-            if "type" in task and task["type"] == "detect_language":
-                pass # Do nothing, language was already detected during transcription previous step
-            elif 'Bazarr-' in task['path']:
-                logging.info(f"Task {task['path']} is being handled by ASR.")
-            else:
-                if patch_translate:
-                    logging.info(f"Task {task['path']} is being handled by Ollama.")
-                    gen_translated_subtitles(task['path']) # Translate transcribed file with external Ollama API
-                    if "item_id" in task:
-                        refresh_jellyfin_metadata(task["item_id"], jellyfinserver, jellyfintoken) # Refresh Jellyfin item metadata after Ollama translation
-                        logging.info(f"Metadata for item {task['item_id']} refreshed successfully (post-Ollama translation operation).")
-                task_queue.task_done() # Now we're done, thanks for the task :)
+                task_queue.task_done()
             # show queue
             logging.debug(f"Queue status: {task_queue.qsize()} tasks remaining")
         except queue.Empty:
             continue # This is ok, as we have a timeout, nothing needs to be printed
         except Exception as e:
             logging.error(f"Error processing task: {e}", exc_info=True) # Log the error and the traceback
+        else:
+            delete_model()  # Call delete_model() *only* if no exception occurred
 
 for _ in range(concurrent_transcriptions):
     threading.Thread(target=transcription_worker, daemon=True).start()
@@ -512,15 +477,8 @@ def receive_jellyfin_webhook(
             fullpath = get_jellyfin_file_name(ItemId, jellyfinserver, jellyfintoken)
             logging.debug(f"Full file path: {fullpath}")
 
-            # TRANSLATOR OLLAMA PATCH - Fix early Jellyfin metadata refresh
-            # original code #gen_subtitles_queue(path_mapping(fullpath), transcribe_or_translate)
-            gen_subtitles_queue(path_mapping(fullpath), transcribe_or_translate, item_id=ItemId) # Send ItemId to gen_subtitles_queue()
+            gen_subtitles_queue(path_mapping(fullpath), transcribe_or_translate)
             try:
-                # Bug: Jellyfin metadata refresh happens before detect_language_task() has even started to do actual detection work.
-                #      gen subtitles_queue() queues the detection task then ends and refresh metadata happens.
-                #      Once detection work is finished, detect_language_task() queues the new transcrbe_or_translate task but it is too late and ItemId is lost.
-                #      To be able to trigger a new metadata refresh later on, I'll carry ItemId through gen_subtitles_queue() and detect_language_task() so they can put the info in the detect_language and transcribe_or_translate tasks at task creation.
-                #      ItemId can then be handled during tasks to refresh metada post-process.
                 refresh_jellyfin_metadata(ItemId, jellyfinserver, jellyfintoken)
                 logging.info(f"Metadata for item {ItemId} refreshed successfully.")
             except Exception as e:
@@ -745,9 +703,7 @@ async def get_audio_chunk(audio_file, offset=detect_language_offset, length=dete
     
     return audio_data
 
-# TRANSLATOR OLLAMA PATCH - Fix early Jellyfin metadata refresh
-# original code #def detect_language_task(path):
-def detect_language_task(path, item_id: str = None):
+def detect_language_task(path):
     detected_language = LanguageCode.NONE
     language_code = 'und'
     global detect_language_length, detect_language_offset
@@ -774,9 +730,6 @@ def detect_language_task(path, item_id: str = None):
         delete_model()
         # put task to transcribe this with the detected language
         task_id = { 'path': path, "transcribe_or_translate": transcribe_or_translate, 'force_language': detected_language }
-        # TRANSLATOR OLLAMA PATCH - Put item_id in the transcribe_or_translate task to refresh Jellyfin metadata post-process
-        if item_id:
-            task_id['item_id'] = item_id
         task_queue.put(task_id)
         
         #maybe modify the file to contain detected language so we won't trigger this again
@@ -936,9 +889,6 @@ def define_subtitle_language_naming(language: LanguageCode, type):
     if namesublang:
         return namesublang
         # If we are translating, then we ALWAYS output an english file.
-    # TRANSLATE OLLAMA PATCH - Bug: During translate operation (built-in whisper), source audio language is included in the subtitle filename instead of 'en'. Fix: This if block (original code) needs to be placed before switch_dict definition if we want to take it in account for the function return.
-    if transcribe_or_translate == 'translate':
-        language = LanguageCode.ENGLISH
     switch_dict = {
         "ISO_639_1": language.to_iso_639_1,
         "ISO_639_2_T": language.to_iso_639_2_t,
@@ -946,6 +896,8 @@ def define_subtitle_language_naming(language: LanguageCode, type):
         "NAME": language.to_name,
         "NATIVE": lambda : language.to_name(in_english=False)
     }
+    if transcribe_or_translate == 'translate':
+        language = LanguageCode.ENGLISH
     return switch_dict.get(type, language.to_name)()
 
 def name_subtitle(file_path: str, language: LanguageCode) -> str:
@@ -1204,9 +1156,7 @@ def find_default_audio_track_language(audio_tracks):
     return None
     
     
-# TRANSLATOR OLLAMA PATCH - Fix early Jellyfin metadata refresh
-# original code #def gen_subtitles_queue(file_path: str, transcription_type: str, force_language: LanguageCode = LanguageCode.NONE) -> None:
-def gen_subtitles_queue(file_path: str, transcription_type: str, force_language: LanguageCode = LanguageCode.NONE, item_id: str = None) -> None:
+def gen_subtitles_queue(file_path: str, transcription_type: str, force_language: LanguageCode = LanguageCode.NONE) -> None:
     global task_queue
     
     if not has_audio(file_path):
@@ -1222,9 +1172,6 @@ def gen_subtitles_queue(file_path: str, transcription_type: str, force_language:
     if not force_language and should_whiser_detect_audio_language:
         # make a detect language task
         task_id = { 'path': file_path, 'type': "detect_language" }
-        # TRANSLATOR OLLAMA PATCH - Put item_id in the detect_language task so it can be sent to detect_language_task() which can then put it in the new transcribe_or_translate task and refresh jellyfin metadata post-process
-        if item_id:
-            task_id['item_id'] = item_id
         task_queue.put(task_id)
         logging.debug(f"Added to queue: {task_id['path']} [type: {task_id.get('type', 'transcribe')}]")
         return
@@ -1235,12 +1182,8 @@ def gen_subtitles_queue(file_path: str, transcription_type: str, force_language:
         'transcribe_or_translate': transcription_type,
         'force_language': force_language
     }
-    # TRANSLATOR OLLAMA PATCH - Put item_id in the transcribe_or_translate task so it can be used to refresh jellyfin metadata post-process
-    if item_id:
-        task['item_id'] = item_id
     task_queue.put(task)
-    # original code #logging.debug(f"Added to queue: {task['path']}, {task['transcribe_or_translate']}, {task['force_language']}")
-    logging.debug(f"Added to queue: {task['path']}, {task['transcribe_or_translate']}, {task['force_language']} (item_id={item_id})")
+    logging.debug(f"Added to queue: {task['path']}, {task['transcribe_or_translate']}, {task['force_language']}")
 
 def should_skip_file(file_path: str, target_language: LanguageCode) -> bool:
     """
@@ -1644,9 +1587,7 @@ def refresh_jellyfin_metadata(itemid: str, server_ip: str, jellyfin_token: str) 
     """
 
     # Jellyfin API endpoint to refresh metadata for a specific item
-    # TRANSLATOR OLLAMA PATCH - Bug: Jellyfin refresh metadata not refreshing at all. Fix: I had to add those args to make it work
-    # original code #url = f"{server_ip}/Items/{itemid}/Refresh"
-    url = f"{server_ip}/Items/{itemid}/Refresh?Recursive=true&ImageRefreshMode=Default&MetadataRefreshMode=Default&ReplaceAllImages=false&RegenerateTrickplay=false&ReplaceAllMetadata=false"
+    url = f"{server_ip}/Items/{itemid}/Refresh"
 
     # Headers to include the Jellyfin token for authentication
     headers = {
@@ -1823,6 +1764,7 @@ def transcribe_existing(transcribe_folders, forceLanguage : LanguageCode | None 
         observer.start()
         logging.info("Finished searching and queueing files for transcription. Now watching for new files.")
 
+
 if __name__ == "__main__":
     import uvicorn
     logging.info(f"Subgen v{subgen_version}")
@@ -1831,5 +1773,4 @@ if __name__ == "__main__":
     os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
     if transcribe_folders:
         transcribe_existing(transcribe_folders)
-
     uvicorn.run("__main__:app", host="0.0.0.0", port=int(webhookport), reload=reload_script_on_change, use_colors=True)

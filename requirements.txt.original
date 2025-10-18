@@ -8,5 +8,3 @@ python-multipart
 ffmpeg-python
 whisper
 watchdog
-# CUSTOM PATCH
-requests>=2.31.0

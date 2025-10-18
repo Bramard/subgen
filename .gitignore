@@ -10,3 +10,7 @@
 subgen.env
 
 models/
+
+# TRANSLATOR OLLAMA PATCH - "secret" variables
+.env
+
