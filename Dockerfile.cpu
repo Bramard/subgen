@@ -46,12 +46,14 @@ COPY --from=builder /install /usr/local
 ### Stage 2b - Runtime: Load app source code and run app
 ###
 FROM runtime AS runtime-app
+
 # Copy application source code
 COPY launcher.py \
      subgen.py \
      language_code.py \
      translator_ollama.py \
      .
+
 # Set command to run the application
 CMD ["python3", "launcher.py"]
 

@@ -1,4 +1,5 @@
-subgen_version = '2025.09.1'
+#subgen_version = '2025.09.1'
+subgen_version = '2025.10.16-translator_ollama'
 
 """
 ENVIRONMENT VARIABLES DOCUMENTATION
@@ -77,8 +78,10 @@ import asyncio
 import torch
 from typing import List
 from enum import Enum
+
 # TRANSLATOR OLLAMA PATCH
-import fnmatch
+from translator_ollama import gen_translated_subtitles
+        
 
 def convert_to_bool(in_bool):
     # Convert the input to string and lower case, then check against true values
@@ -110,11 +113,7 @@ def get_env_with_fallback(new_name: str, old_name: str, default_value=None, conv
     return value
     
 # TRANSLATOR OLLAMA PATCH
-patch_translate = os.getenv('OLLAMA_TRANSLATE', 'False')
-patch_translate_src = os.getenv('OLLAMA_TRANSLATE_SRC', 'auto')
-patch_translate_tgt = os.getenv('OLLAMA_TRANSLATE_TGT', 'mk|fr')
-patch_translate_model = os.getenv('OLLAMA_TRANSLATE_MODEL', 'zongwei/gemma3-translator:4b')
-patch_translate_api_url = os.getenv('OLLAMA_TRANSLATE_API_URL', 'http://127.0.0.1:11434/api')
+patch_translate = convert_to_bool(os.getenv('OLLAMA_TRANSLATE', False))
 
 # Server Integration - with backwards compatibility
 plextoken = get_env_with_fallback('PLEX_TOKEN', 'PLEXTOKEN', 'token here')
@@ -278,38 +277,47 @@ def transcription_worker():
         try:        
             task = task_queue.get(block=True, timeout=1)
             if "type" in task and task["type"] == "detect_language":
-                detect_language_task(task['path'])
+                # original code #detect_language_task(task['path'])
+                detect_language_task(task['path'], item_id=task['item_id']) # TRANSLATOR OLLAMA PATCH - Send item_id to detect_language_task() so it can put it in the new transcribe_or_translate task after language detection
             elif 'Bazarr-' in task['path']:
                 logging.info(f"Task {task['path']} is being handled by ASR.")
             else:
                 logging.info(f"Task {task['path']} is being handled by Subgen.") 
                 gen_subtitles(task['path'], task['transcribe_or_translate'], task['force_language'])
-                #task_queue.task_done()
-            # show queue
-            #logging.debug(f"Queue status: {task_queue.qsize()} tasks remaining")
+                # TRANSLATOR OLLAMA PATCH - Refresh Jellyfin item metadata after Subgen transcription/translation
+                if "item_id" in task:
+                    refresh_jellyfin_metadata(task["item_id"], jellyfinserver, jellyfintoken)
+                    logging.info(f"Metadata for item {task['item_id']} refreshed successfully (post-Subgen {task['transcribe_or_translate']} operation).")
+                # original code #task_queue.task_done() # TRANSLATOR OLLAMA PATCH - Let me use your transcribe_or_translate task a little bit longer, we still have translating work to do :)
+            # original code ## show queue
+            # original code #logging.debug(f"Queue status: {task_queue.qsize()} tasks remaining")
         except queue.Empty:
             continue # This is ok, as we have a timeout, nothing needs to be printed
         except Exception as e:
             logging.error(f"Error processing task: {e}", exc_info=True) # Log the error and the traceback
         else:
             delete_model()  # Call delete_model() *only* if no exception occurred
-        # TRANSLATOR OLLAMA PATCH
-        try:        
-            if patch_translate == "True":
-                gen_translated_subtitles(task['path']) 	# translate transcribed file with external ollama api
-            task_queue.task_done()
+
+        # TRANSLATOR OLLAMA PATCH - Do external Ollama translation
+        try:
+            if "type" in task and task["type"] == "detect_language":
+                pass # Do nothing, language was already detected during transcription previous step
+            elif 'Bazarr-' in task['path']:
+                logging.info(f"Task {task['path']} is being handled by ASR.")
+            else:
+                if patch_translate:
+                    logging.info(f"Task {task['path']} is being handled by Ollama.")
+                    gen_translated_subtitles(task['path']) # Translate transcribed file with external Ollama API
+                    if "item_id" in task:
+                        refresh_jellyfin_metadata(task["item_id"], jellyfinserver, jellyfintoken) # Refresh Jellyfin item metadata after Ollama translation
+                        logging.info(f"Metadata for item {task['item_id']} refreshed successfully (post-Ollama translation operation).")
+                task_queue.task_done() # Now we're done, thanks for the task :)
             # show queue
             logging.debug(f"Queue status: {task_queue.qsize()} tasks remaining")
         except queue.Empty:
             continue # This is ok, as we have a timeout, nothing needs to be printed
         except Exception as e:
             logging.error(f"Error processing task: {e}", exc_info=True) # Log the error and the traceback
-        if "item_id" in task:
-            try:
-                refresh_jellyfin_metadata(task["item_id"], jellyfinserver, jellyfintoken) # refresh jellyfin metadata after translation
-                logging.info(f"Metadata for item {task['item_id']} refreshed successfully (after translation).")
-            except Exception as e:
-                logging.error(f"Failed to refresh metadata for item {task['item_id']}: {e}")
 
 for _ in range(concurrent_transcriptions):
     threading.Thread(target=transcription_worker, daemon=True).start()
@@ -504,10 +512,15 @@ def receive_jellyfin_webhook(
             fullpath = get_jellyfin_file_name(ItemId, jellyfinserver, jellyfintoken)
             logging.debug(f"Full file path: {fullpath}")
 
-            # TRANSLATOR OLLAMA PATCH
+            # TRANSLATOR OLLAMA PATCH - Fix early Jellyfin metadata refresh
             # original code #gen_subtitles_queue(path_mapping(fullpath), transcribe_or_translate)
-            gen_subtitles_queue(path_mapping(fullpath), transcribe_or_translate, item_id=ItemId) # call to the patched function with jellyfin item_id added as arg
+            gen_subtitles_queue(path_mapping(fullpath), transcribe_or_translate, item_id=ItemId) # Send ItemId to gen_subtitles_queue()
             try:
+                # Bug: Jellyfin metadata refresh happens before detect_language_task() has even started to do actual detection work.
+                #      gen subtitles_queue() queues the detection task then ends and refresh metadata happens.
+                #      Once detection work is finished, detect_language_task() queues the new transcrbe_or_translate task but it is too late and ItemId is lost.
+                #      To be able to trigger a new metadata refresh later on, I'll carry ItemId through gen_subtitles_queue() and detect_language_task() so they can put the info in the detect_language and transcribe_or_translate tasks at task creation.
+                #      ItemId can then be handled during tasks to refresh metada post-process.
                 refresh_jellyfin_metadata(ItemId, jellyfinserver, jellyfintoken)
                 logging.info(f"Metadata for item {ItemId} refreshed successfully.")
             except Exception as e:
@@ -732,7 +745,9 @@ async def get_audio_chunk(audio_file, offset=detect_language_offset, length=dete
     
     return audio_data
 
-def detect_language_task(path):
+# TRANSLATOR OLLAMA PATCH - Fix early Jellyfin metadata refresh
+# original code #def detect_language_task(path):
+def detect_language_task(path, item_id: str = None):
     detected_language = LanguageCode.NONE
     language_code = 'und'
     global detect_language_length, detect_language_offset
@@ -759,6 +774,9 @@ def detect_language_task(path):
         delete_model()
         # put task to transcribe this with the detected language
         task_id = { 'path': path, "transcribe_or_translate": transcribe_or_translate, 'force_language': detected_language }
+        # TRANSLATOR OLLAMA PATCH - Put item_id in the transcribe_or_translate task to refresh Jellyfin metadata post-process
+        if item_id:
+            task_id['item_id'] = item_id
         task_queue.put(task_id)
         
         #maybe modify the file to contain detected language so we won't trigger this again
@@ -846,86 +864,6 @@ def write_lrc(result, file_path):
             # remove embedded newlines in text, since some players ignore text after newlines
             text = segment.text[:].replace('\n', '')
             file.write(f"[{minutes:02d}:{seconds:02d}.{fraction:02d}]{text}\n")
-
-# TRANSLATOR OLLAMA PATCH
-def gen_translated_subtitles(file_path: str) -> None:
-    """Generates translated subtitles for a video file.
-
-    External Ollama instance is useed.
-    File "translator_ollama.py" is imported.
-
-    Args:
-        file_path: str - The path to the video file.
-    """
-
-    try:
-        from translator_ollama import translate_srt_file
-        
-        # Translate with every model supplied
-        for translate_model in patch_translate_model.split("|"):
-            # Construct suffix for translated file
-            suffix_pre = "ollama-"											# suffix begins with this string
-            suffix_post = "-translated"											# suffix ends with this string
-            translate_model_trimmed = translate_model.replace(":","_").replace("/","_") 				# to avoid using char not compatible with OS filenames
-            suffix = suffix_pre + translate_model_trimmed + suffix_post 						# suffix added to the translated filename
-
-            # Construct exclusion pattern to match previously translated files
-            other_translation_pattern = f"*{suffix_pre}*{suffix_post}*" 						# previously translated files have a different suffix if they were translated with a different model
-
-            # Get all the subtitle files from the video directory while excluding previous translations.
-            directory = os.path.dirname(file_path)
-            all_files_unfiltered = os.listdir(directory)
-            all_files = [f for f in all_files_unfiltered if not fnmatch.fnmatch(f, other_translation_pattern)] 		# exclude previously translated files to avoid using it as source for current translation
-
-            # Find subtitle file associated to the video, generateed by subgen, to use as source for the translation.
-            file_path_without_extension = os.path.splitext(file_path)[0]
-            file_name_without_extension = os.path.basename(file_path_without_extension)
-            extension = ".srt"
-            if show_in_subname_subgen:
-                srt_filename = next(f for f in all_files if f.startswith(file_name_without_extension + ".subgen") and f.endswith(extension))
-            else:
-                srt_filename = next(f for f in all_files if f.startswith(file_name_without_extension) and f.endswith(extension))
-            srt = f"{directory}/{srt_filename}"
-            logging.info(f"Queuing file for translating using model {translate_model} : {srt_filename}")
-
-            # helpful debug lines :
-            #logging.debug(f"TRANSLATOR OLLAMA PATCH - suffix = {suffix}")
-            #logging.debug(f"TRANSLATOR OLLAMA PATCH - other_translation_pattern = {other_translation_pattern}")
-            #logging.debug(f"TRANSLATOR OLLAMA PATCH - directory = {directory}")
-            #logging.debug(f"TRANSLATOR OLLAMA PATCH - all_files_unfiltered = {all_files_unfiltered}")
-            #logging.debug(f"TRANSLATOR OLLAMA PATCH - all_files = {all_files}")
-            #logging.debug(f"TRANSLATOR OLLAMA PATCH - file_path = {file_path}")
-            #logging.debug(f"TRANSLATOR OLLAMA PATCH - file_path_without_extension = {file_path_without_extension}")
-            #logging.debug(f"TRANSLATOR OLLAMA PATCH - file_name_without_extension = {file_name_without_extension}")
-            #logging.debug(f"TRANSLATOR OLLAMA PATCH - srt_filename =  : {srt_filename}")
-            #logging.debug(f"TRANSLATOR OLLAMA PATCH - srt =  : {srt}")
-
-            # Translate in every language supplied
-            for translated_language in patch_translate_tgt.split("|"):
-                try:
-                    start_time = time.time()
-                    logging.info(f"Translating file {srt_filename} in {translated_language} with model {translate_model}")
-                    out_srt = os.path.splitext(srt)[0] + f".{suffix}.{translated_language}{extension}"			# add suffix and language to filename
-                    # helpful debug lines :
-                    #logging.debug(f"TRANSLATOR OLLAMA PATCH - out_srt = : {out_srt}")
-
-                    # Translate the subtitle file
-                    translate_srt_file(
-                        srt,
-                        out_srt,
-                        src_lang=patch_translate_src,
-                        tgt_lang=translated_language,
-                        model=translate_model,
-                        api_url=patch_translate_api_url,
-                    )
-                    elapsed_time = time.time() - start_time
-                    minutes, seconds = divmod(int(elapsed_time), 60)
-                    logging.info(f"Completed translation to {translated_language} with model {translate_model} in {minutes}m {seconds}s: {srt} -> {out_srt}")
-                except Exception as e:
-                    logging.info(f"Error translating subtitles in {translated_language} for {file_path}: {e}")
-
-    except Exception as e:
-        logging.info(f"Error translating subtitles for {file_path}: {e}")
 
 def gen_subtitles(file_path: str, transcription_type: str, force_language : LanguageCode = LanguageCode.NONE) -> None:
     """Generates subtitles for a video file.
@@ -1265,8 +1203,8 @@ def find_default_audio_track_language(audio_tracks):
     return None
     
     
-# TRANSLATOR OLLAMA PATCH
-# original code # def gen_subtitles_queue(file_path: str, transcription_type: str, force_language: LanguageCode = LanguageCode.NONE) -> None:
+# TRANSLATOR OLLAMA PATCH - Fix early Jellyfin metadata refresh
+# original code #def gen_subtitles_queue(file_path: str, transcription_type: str, force_language: LanguageCode = LanguageCode.NONE) -> None:
 def gen_subtitles_queue(file_path: str, transcription_type: str, force_language: LanguageCode = LanguageCode.NONE, item_id: str = None) -> None:
     global task_queue
     
@@ -1283,6 +1221,9 @@ def gen_subtitles_queue(file_path: str, transcription_type: str, force_language:
     if not force_language and should_whiser_detect_audio_language:
         # make a detect language task
         task_id = { 'path': file_path, 'type': "detect_language" }
+        # TRANSLATOR OLLAMA PATCH - Put item_id in the detect_language task so it can be sent to detect_language_task() which can then put it in the new transcribe_or_translate task and refresh jellyfin metadata post-process
+        if item_id:
+            task_id['item_id'] = item_id
         task_queue.put(task_id)
         logging.debug(f"Added to queue: {task_id['path']} [type: {task_id.get('type', 'transcribe')}]")
         return
@@ -1293,7 +1234,7 @@ def gen_subtitles_queue(file_path: str, transcription_type: str, force_language:
         'transcribe_or_translate': transcription_type,
         'force_language': force_language
     }
-    # TRANSLATOR OLLAMA PATCH
+    # TRANSLATOR OLLAMA PATCH - Put item_id in the transcribe_or_translate task so it can be used to refresh jellyfin metadata post-process
     if item_id:
         task['item_id'] = item_id
     task_queue.put(task)
@@ -1702,8 +1643,8 @@ def refresh_jellyfin_metadata(itemid: str, server_ip: str, jellyfin_token: str) 
     """
 
     # Jellyfin API endpoint to refresh metadata for a specific item
-    # original code # url = f"{server_ip}/Items/{itemid}/Refresh"
-    # TRANSLATOR OLLAMA PATCH
+    # TRANSLATOR OLLAMA PATCH - Bug: Jellyfin refresh metadata not refreshing at all. Fix: I had to add those args to make it work
+    # original code #url = f"{server_ip}/Items/{itemid}/Refresh"
     url = f"{server_ip}/Items/{itemid}/Refresh?Recursive=true&ImageRefreshMode=Default&MetadataRefreshMode=Default&ReplaceAllImages=false&RegenerateTrickplay=false&ReplaceAllMetadata=false"
 
     # Headers to include the Jellyfin token for authentication

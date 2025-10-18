@@ -64,6 +64,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ### Stage 2b - Runtime: Load app source code and run app
 ###
 FROM runtime AS runtime-app
+
 # Copy application source code from builder-app
 COPY --from=builder-app /subgen/launcher.py .
 COPY --from=builder-app /subgen/subgen.py .

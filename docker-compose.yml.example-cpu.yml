@@ -1,4 +1,4 @@
-# Docker Compose file [GPU]
+# Docker Compose file [CPU]
 
 
 
@@ -40,22 +40,6 @@
 # 
 # To limit concurrent tasks, at service scope, Subgen uses a queuing system.
 # External Ollama instance can be configured to run only 1 LLM model at a time (not caring how many subgen services are using it in the same time).
-# 
-# If Ollama uses the same GPU than subgen (in a separate Docker container on the same host, for example), built-in WhisperAI from one service and Ollama instance triggered from another service could use GPU resources at the same time.
-# 
-# 
-# 
-# Multiples GPU
-# -------------
-# 
-# On a multiple-GPU system, Docker extension fields are used here to target a unique GPU.
-# Each service can then be anchored to a specific GPU.
-# This avoids overload due to multiples services running on the same GPU at the same time.
-# 
-# On a single-GPU system, if using multiples services simultaneously, be ready to have enough GPU resources to support concurrent tasks.
-# 
-# By default, the 4 subgen services are set up to use the first GPU.
-# To anchor a service to a different GPU, simply adapt the name of the anchor used in the the service (first line: "#<<: *subgen-gpuN", where 'N' is 0-3).
 #
 # 
 
@@ -68,66 +52,13 @@
 # This section is reused across different services.
 # - Avoid pulling and build instead.
 # - Fetch the image built.
-# - Handle Nvidia GPU support.
-#
-# One extension field per GPU.
 #
 #
-x-subgen-gpu0: &subgen-gpu0
+x-subgen-cpu: &subgen-cpu
   image: subgen:local
   pull_policy: never
   tty: true
   restart: unless-stopped
-  runtime: nvidia
-  deploy:
-    resources:
-      reservations:
-        devices:
-          - driver: nvidia
-            device_ids: ['0']		# Use only GPU with id '0'
-            capabilities: [gpu]
-
-x-subgen-gpu1: &subgen-gpu1
-  image: subgen:local
-  pull_policy: never
-  tty: true
-  restart: unless-stopped
-  runtime: nvidia
-  deploy:
-    resources:
-      reservations:
-        devices:
-          - driver: nvidia
-            device_ids: ['1']		# Use only GPU with id '1'
-            capabilities: [gpu]
-
-x-subgen-gpu2: &subgen-gpu2
-  image: subgen:local
-  pull_policy: never
-  tty: true
-  restart: unless-stopped
-  runtime: nvidia
-  deploy:
-    resources:
-      reservations:
-        devices:
-          - driver: nvidia
-            device_ids: ['2']		# Use only GPU with id '2'
-            capabilities: [gpu]
-
-x-subgen-gpu3: &subgen-gpu3
-  image: subgen:local
-  pull_policy: never
-  tty: true
-  restart: unless-stopped
-  runtime: nvidia
-  deploy:
-    resources:
-      reservations:
-        devices:
-          - driver: nvidia
-            device_ids: ['3']		# Use only GPU with id '3'
-            capabilities: [gpu]
 
 
 
@@ -182,19 +113,19 @@ services:
   subgen-builder:
     build:
       context: .
-      dockerfile: Dockerfile			# GPU build file
+      dockerfile: Dockerfile.cpu		# CPU build file
     image: subgen:local
     command: ["true"]				# exits with status 0
 
-  # Transcribe on gpu0 with built-in Whisper AI model.
+  # Transcribe with built-in Whisper AI model.
   subgen-transcribe:
-    <<: *subgen-gpu0				# Use GPU 0
+    <<: *subgen-cpu
     container_name: subgen-transcribe
     depends_on:
       - subgen-builder
     volumes: *shared-volumes
     env_file:
-      - path: ./subgen-gpu.env			# GPU only
+      - path: ./subgen-cpu.env			# CPU only
         required: true
       - path: ./subgen-common.env		# Shared across services
         required: true
@@ -203,16 +134,15 @@ services:
     ports:
        - "9000:9000"
 
-  # Translate on gpu1 to EN with built-in Whisper AI model.
+  # Translate to EN with built-in Whisper AI model.
   subgen-translate-en:
-    #<<: *subgen-gpu1				# Use GPU 1
-    <<: *subgen-gpu0				# Use GPU 0
+    <<: *subgen-cpu
     container_name: subgen-translate-en
     depends_on:
       - subgen-builder
     volumes: *shared-volumes
     env_file:
-      - path: ./subgen-gpu.env			# GPU only
+      - path: ./subgen-cpu.env			# CPU only
         required: true
       - path: ./subgen-common.env		# Shared across services
         required: true
@@ -221,16 +151,15 @@ services:
     ports:
        - "9001:9000"
 
-  # Translate on gpu2 to MK with external Ollama instance.
+  # Translate to MK with external Ollama instance.
   subgen-translate-mk:
-    #<<: *subgen-gpu2				# Use GPU 2
-    <<: *subgen-gpu0				# Use GPU 0
+    <<: *subgen-cpu
     container_name: subgen-translate-mk
     depends_on:
       - subgen-builder
     volumes: *shared-volumes
     env_file:
-      - path: ./subgen-gpu.env			# GPU only
+      - path: ./subgen-cpu.env			# CPU only
         required: true
       - path: ./subgen-common.env		# Shared across services
         required: true
@@ -239,16 +168,15 @@ services:
     ports:
        - "9002:9000"
 
-  # Translate on gpu3 to FR with external Ollama instance.
+  # Translate to FR with external Ollama instance.
   subgen-translate-fr:
-    #<<: *subgen-gpu3				# Use GPU 3
-    <<: *subgen-gpu0				# Use GPU 0
+    <<: *subgen-cpu
     container_name: subgen-translate-fr
     depends_on:
       - subgen-builder
     volumes: *shared-volumes
     env_file:
-      - path: ./subgen-gpu.env			# GPU only
+      - path: ./subgen-cpu.env			# CPU only
         required: true
       - path: ./subgen-common.env		# Shared across services
         required: true
