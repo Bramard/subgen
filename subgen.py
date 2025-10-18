@@ -936,6 +936,9 @@ def define_subtitle_language_naming(language: LanguageCode, type):
     if namesublang:
         return namesublang
         # If we are translating, then we ALWAYS output an english file.
+    # TRANSLATE OLLAMA PATCH - Bug: During translate operation (built-in whisper), source audio language is included in the subtitle filename instead of 'en'. Fix: This if block (original code) needs to be placed before switch_dict definition if we want to take it in account for the function return.
+    if transcribe_or_translate == 'translate':
+        language = LanguageCode.ENGLISH
     switch_dict = {
         "ISO_639_1": language.to_iso_639_1,
         "ISO_639_2_T": language.to_iso_639_2_t,
@@ -943,8 +946,6 @@ def define_subtitle_language_naming(language: LanguageCode, type):
         "NAME": language.to_name,
         "NATIVE": lambda : language.to_name(in_english=False)
     }
-    if transcribe_or_translate == 'translate':
-        language = LanguageCode.ENGLISH
     return switch_dict.get(type, language.to_name)()
 
 def name_subtitle(file_path: str, language: LanguageCode) -> str:
