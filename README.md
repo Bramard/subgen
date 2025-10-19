@@ -159,6 +159,7 @@ Examples :
 * Jellyfin metadata refresh does not actually refresh.
 * Jellyfin metadata refresh happens before audio language detection has started.
 * Translate to english (with built-in whisper) appends source audio language in subtitle filename instead of "en".
+* When queuing multiple detect_language tasks for the same file, only the last detection would trigger its corresponding transcription/translation task.
 
 > See bugfixes details in subgen.py file.
 
