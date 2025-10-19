@@ -220,7 +220,14 @@ in_docker = os.path.exists('/.dockerenv')
 docker_status = "Docker" if in_docker else "Standalone"
 
 class DeduplicatedQueue(queue.Queue):
-    """Queue that prevents duplicates in both queued and in-progress tasks."""
+    # original code # """Queue that prevents duplicates in both queued and in-progress tasks."""
+    # TRANSLATOR OLLAMA PATCH
+    """
+    Add a task to the queue if not a duplicate.
+    
+    Deduplication tracks (path, task_type) pairs. Detect tasks block duplicates of the same type.
+    Transcribe/translate tasks can follow a detect task for the same file, but duplicates of the same type are blocked.
+    """
     def __init__(self):
         super().__init__()
         self._queued = set()    # Tracks paths in the queue
@@ -230,9 +237,41 @@ class DeduplicatedQueue(queue.Queue):
     def put(self, item, block=True, timeout=None):
         with self._lock:
             path = item["path"]
-            if path not in self._queued and path not in self._processing:
+
+            # TRANSLATOR OLLAMA PATCH
+            # ---
+            # FIX: Type-sensitive deduplication for Detect --> Transcribe/Translate
+            #
+            # Problem:
+            # When multiple detect_language tasks were queued for the same file, only the last detection would enqueue its corresponding transcription/translation task.
+            # This occurred because DeduplicatedQueue blocked adding tasks for a file while any task for that file was still in processing.
+            #
+            # Solution:
+            # Deduplication now considers (path, task_type) pairs:
+            #   - 'detect_language' tasks are deduplicated by type.
+            #   - 'transcribe' and 'translate' tasks are deduplicated by type.
+            #   - Transcribe/translate tasks are allowed to enqueue even if detect_language is currently processing, so each detection triggers its own follow-up.
+            #
+            # Benefit:
+            #  - Every detect_language task triggers its follow-up task.
+            #  - Duplicate detect_language tasks are still blocked.
+            #  - Duplicate transcribe/translate tasks of the same type are still blocked.
+            # ---
+            item_type = item.get("type", item.get("transcribe_or_translate"))
+            key = (path, item_type)
+            detect_key = (path, "detect_language")
+            # If this exact task type is not queued or processing, allow
+            if key not in self._queued and key not in self._processing:
                 super().put(item, block, timeout)
-                self._queued.add(path)
+                self._queued.add(key)
+            # If it's a follow-up transcribe/translate task (because detect_language is running for this path), allow
+            elif item_type in ("transcribe", "translate") and detect_key in self._processing:
+                super().put(item, block, timeout)
+                self._queued.add(key)
+            
+            # original code #if path not in self._queued and path not in self._processing:
+                # original code #super().put(item, block, timeout)
+                # original code #self._queued.add(path)
 
     def get(self, block=True, timeout=None):
         item = super().get(block, timeout)
