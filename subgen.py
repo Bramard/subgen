@@ -281,13 +281,25 @@ class DeduplicatedQueue(queue.Queue):
             self._processing.add(path)  # Mark as in-progress
         return item
 
-    def task_done(self):
+    # TRANSLATOR OLLAMA PATCH - Fix same item not enqueued twice in a row if transcribe_or_translate task is not finished
+    # original code #def task_done(self):
+    def task_done(self, item=None):
         super().task_done()
         with self._lock:
             # Assumes task_done() is called after processing the item from get()
             # If your workers process multiple items per get(), adjust logic here
-            if self.unfinished_tasks == 0:
-                self._processing.clear()  # Reset when all tasks are done
+            # original code #if self.unfinished_tasks == 0:
+            # original code #   self._processing.clear()  # Reset when all tasks are done
+            if item is not None:
+                path = item["path"]
+                item_type = item.get("type", item.get("transcribe_or_translate"))
+                key = (path, item_type)
+                self._processing.discard(key)
+                self._queued.discard(key)
+            else:
+                # Fallback: if we don’t know which item, avoid wiping everything
+                if self.unfinished_tasks == 0:
+                    self._processing.clear()
 
     def is_processing(self):
         """Return True if any tasks are being processed."""
@@ -350,7 +362,7 @@ def transcription_worker():
                     if "item_id" in task:
                         refresh_jellyfin_metadata(task["item_id"], jellyfinserver, jellyfintoken) # Refresh Jellyfin item metadata after Ollama translation
                         logging.info(f"Metadata for item {task['item_id']} refreshed successfully (post-Ollama translation operation).")
-                task_queue.task_done() # Now we're done, thanks for the task :)
+                task_queue.task_done(task) # Now we're done, thanks for the task :)
             # show queue
             logging.debug(f"Queue status: {task_queue.qsize()} tasks remaining")
         except queue.Empty:
@@ -809,7 +821,10 @@ def detect_language_task(path, item_id: str = None):
         logging.info(f"Error detecting language of file with whisper: {e}")
         
     finally:
-        task_queue.task_done()
+        # TRANSLATOR OLLAMA PATCH - Fix same item not enqueued twice in a row if transcribe_or_translate task is not finished
+        # original code #task_queue.task_done()
+        task_queue.task_done({'path': path, 'type': 'detect_language'})
+
         delete_model()
         # put task to transcribe this with the detected language
         task_id = { 'path': path, "transcribe_or_translate": transcribe_or_translate, 'force_language': detected_language }
