@@ -277,8 +277,12 @@ class DeduplicatedQueue(queue.Queue):
         item = super().get(block, timeout)
         with self._lock:
             path = item["path"]
-            self._queued.discard(path)  # Remove from queued set
-            self._processing.add(path)  # Mark as in-progress
+            item_type = item.get("type", item.get("transcribe_or_translate"))
+            key = (path, item_type)
+            self._queued.discard(key)  # Remove from queued set
+            self._processing.add(key)  # Mark as in-progress
+            # original code #self._queued.discard(path)  # Remove from queued set
+            # original code #self._processing.add(path)  # Mark as in-progress
         return item
 
     # TRANSLATOR OLLAMA PATCH - Fix same item not enqueued twice in a row if transcribe_or_translate task is not finished
@@ -339,9 +343,11 @@ def transcription_worker():
                 if "item_id" in task:
                     refresh_jellyfin_metadata(task["item_id"], jellyfinserver, jellyfintoken)
                     logging.info(f"Metadata for item {task['item_id']} refreshed successfully (post-Subgen {task['transcribe_or_translate']} operation).")
-                # original code #task_queue.task_done() # TRANSLATOR OLLAMA PATCH - Let me use your transcribe_or_translate task a little bit longer, we still have translating work to do :)
-            # original code ## show queue
-            # original code #logging.debug(f"Queue status: {task_queue.qsize()} tasks remaining")
+                # TRANSLATOR OLLAMA PATCH - Fix same item not enqueued twice in a row if transcribe_or_translate task is not finished
+                # original code #task_queue.task_done()
+                task_queue.task_done(task)
+            # show queue
+            logging.debug(f"Queue status: {task_queue.qsize()} tasks remaining")
         except queue.Empty:
             continue # This is ok, as we have a timeout, nothing needs to be printed
         except Exception as e:
@@ -350,25 +356,18 @@ def transcription_worker():
             delete_model()  # Call delete_model() *only* if no exception occurred
 
         # TRANSLATOR OLLAMA PATCH - Do external Ollama translation
-        try:
-            if "type" in task and task["type"] == "detect_language":
-                pass # Do nothing, language was already detected during transcription previous step
-            elif 'Bazarr-' in task['path']:
-                logging.info(f"Task {task['path']} is being handled by ASR.")
-            else:
-                if patch_translate:
-                    logging.info(f"Task {task['path']} is being handled by Ollama.")
-                    gen_translated_subtitles(task['path']) # Translate transcribed file with external Ollama API
-                    if "item_id" in task:
-                        refresh_jellyfin_metadata(task["item_id"], jellyfinserver, jellyfintoken) # Refresh Jellyfin item metadata after Ollama translation
-                        logging.info(f"Metadata for item {task['item_id']} refreshed successfully (post-Ollama translation operation).")
-                task_queue.task_done(task) # Now we're done, thanks for the task :)
-            # show queue
-            logging.debug(f"Queue status: {task_queue.qsize()} tasks remaining")
-        except queue.Empty:
-            continue # This is ok, as we have a timeout, nothing needs to be printed
-        except Exception as e:
-            logging.error(f"Error processing task: {e}", exc_info=True) # Log the error and the traceback
+        if "type" in task and task["type"] == "detect_language":
+            # TRANSLATOR OLLAMA PATCH - Do nothing, we don't want to trigger ollama translation for detect_language tasks.
+            pass
+        else:
+            if patch_translate:
+                # TRANSLATOR OLLAMA PATCH - Translate transcribed file with external Ollama API
+                logging.info(f"Task {task['path']} is being handled by Ollama.")
+                gen_translated_subtitles(task['path'])
+                # TRANSLATOR OLLAMA PATCH - Refresh Jellyfin item metadata after Subgen transcription/translation
+                if "item_id" in task:
+                    refresh_jellyfin_metadata(task["item_id"], jellyfinserver, jellyfintoken)
+                    logging.info(f"Metadata for item {task['item_id']} refreshed successfully (post-Ollama translation operation).")
 
 for _ in range(concurrent_transcriptions):
     threading.Thread(target=transcription_worker, daemon=True).start()
@@ -642,7 +641,8 @@ async def asr(
         start_time = time.time()
         start_model()
 
-        task_id = {'path': f"Bazarr-asr-{random_name}"}
+        # original code #task_id = {'path': f"Bazarr-asr-{random_name}"}
+        task_id = {'path': f"Bazarr-asr-{random_name}", 'type': task}
         task_queue.put(task_id)
 
         args = {}
@@ -678,7 +678,9 @@ async def asr(
     
     finally:
         await audio_file.close()
-        task_queue.task_done()
+        # TRANSLATOR OLLAMA PATCH - Fix same item not enqueued twice in a row if transcribe_or_translate task is not finished
+        # original code #task_queue.task_done()
+        task_queue.task_done(task_id)
         delete_model()
     
     if result:
@@ -729,7 +731,8 @@ async def detect_language(
         start_model()
         random_name = ''.join(random.choices("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", k=6))
         
-        task_id = { 'path': f"Bazarr-detect-language-{random_name}" }        
+        # original code #task_id = { 'path': f"Bazarr-detect-language-{random_name}" }
+        task_id = { 'path': f"Bazarr-detect-language-{random_name}", 'type': 'detect_language' }
         task_queue.put(task_id)
         args = {}
         #sample_rate = next(stream.rate for stream in av.open(audio_file.file).streams if stream.type == 'audio')
@@ -758,7 +761,9 @@ async def detect_language(
         
     finally:
         #await audio_file.close()
-        task_queue.task_done()
+        # TRANSLATOR OLLAMA PATCH - Fix same item not enqueued twice in a row if transcribe_or_translate task is not finished
+        # original code #task_queue.task_done()
+        task_queue.task_done(task_id)
         delete_model()
 
         return {"detected_language": detected_language.to_name(), "language_code": language_code}
@@ -975,7 +980,7 @@ def gen_subtitles(file_path: str, transcription_type: str, force_language : Lang
 
     finally:
         delete_model()
-        
+
 def define_subtitle_language_naming(language: LanguageCode, type):
     """
     Determines the naming format for a subtitle language based on the given type.
